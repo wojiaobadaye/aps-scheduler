@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  scheduler:
+    build: .
+    container_name: aps-scheduler
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./scripts:/app/scripts
+      - scheduler_data:/app/instance
+    environment:
+      - DATABASE_URI=sqlite:////app/instance/scheduler.db
+    restart: unless-stopped
+
+volumes:
+  scheduler_data:
