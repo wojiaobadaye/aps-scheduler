@@ -54,7 +54,6 @@ def create_app():
     _setup_logging(app)
 
     db.init_app(app)
-    configure_jobstore(db.engine)
     register_error_handlers(app)
 
     app.register_blueprint(scripts_bp)
@@ -62,6 +61,7 @@ def create_app():
     app.register_blueprint(status_bp)
 
     with app.app_context():
+        configure_jobstore(db.engine)
         db.create_all()
 
     return app
