@@ -9,6 +9,7 @@ from flask import Flask, request
 from app.config import Config
 from app.models import db
 from app.errors import register_error_handlers
+from app.scheduler import configure_jobstore
 from app.routes.scripts import scripts_bp
 from app.routes.jobs import jobs_bp
 from app.routes.status import status_bp
@@ -53,6 +54,7 @@ def create_app():
     _setup_logging(app)
 
     db.init_app(app)
+    configure_jobstore(db.engine)
     register_error_handlers(app)
 
     app.register_blueprint(scripts_bp)
