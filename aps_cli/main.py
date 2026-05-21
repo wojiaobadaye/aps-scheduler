@@ -232,6 +232,22 @@ def job_trigger(job_id):
     click.echo("Triggered job %s" % job_id)
 
 
+@job.command("logs")
+@click.argument("job_id")
+@click.option("--limit", default=20, help="Number of logs to show")
+def job_logs(job_id, limit):
+    """Show execution logs for a job."""
+    logs = _req("GET", "jobs/%s/logs" % job_id, params={"limit": limit})
+    if not logs:
+        click.echo("No logs found.")
+        return
+    for log in logs:
+        click.echo(
+            "%-24s  %-8s  %s"
+            % (log.get("started_at", "?"), log["status"], log.get("error", "")[:60])
+        )
+
+
 # ── scheduler commands ────────────────────────────────────────
 
 @click.group()
