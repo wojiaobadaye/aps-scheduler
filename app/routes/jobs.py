@@ -120,3 +120,17 @@ def trigger_job_route(job_id):
         raise AppError("not found", 404)
     sched_trigger(job.job_id)
     return jsonify({"message": "triggered"})
+
+
+@jobs_bp.route("/api/jobs/<job_id>/logs", methods=["GET"])
+def job_logs(job_id):
+    from app.models import ExecutionLog
+    limit = request.args.get("limit", 20, type=int)
+    logs = (
+        ExecutionLog.query
+        .filter_by(job_id=job_id)
+        .order_by(ExecutionLog.started_at.desc())
+        .limit(min(limit, 100))
+        .all()
+    )
+    return jsonify([log.to_dict() for log in logs])
