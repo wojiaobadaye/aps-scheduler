@@ -1,6 +1,7 @@
-"""Entry point for the Flask APScheduler application."""
-import sys
+"""Entry point for the Flask APScheduler application (development)."""
 import os
+import sys
+import signal
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -9,14 +10,22 @@ from app import create_app, scheduler, db, Job
 app = create_app()
 
 with app.app_context():
-    # Resume persisted jobs from DB into scheduler
     jobs = Job.query.filter_by(enabled=True).all()
     for job in jobs:
         from app.scheduler import add_job_to_scheduler
-
         add_job_to_scheduler(job.job_id, job.script_name, job.trigger, job.trigger_args)
 
 scheduler.start()
+
+
+def _shutdown(signum, frame):
+    print("\nShutting down scheduler...")
+    scheduler.shutdown(wait=False)
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, _shutdown)
+signal.signal(signal.SIGINT, _shutdown)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
