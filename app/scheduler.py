@@ -25,12 +25,16 @@ _retry_count: dict[str, int] = {}
 scheduler = BackgroundScheduler(
     timezone=Config.SCHEDULER_TIMEZONE,
     job_defaults=Config.SCHEDULER_JOB_DEFAULTS,
+    jobstores={},
 )
 
 
 def configure_jobstore(engine):
-    """配置 SQLAlchemyJobStore，需在 create_app 中调用。"""
-    scheduler.add_jobstore(SQLAlchemyJobStore(engine=engine))
+    """配置 SQLAlchemyJobStore，需在 create_app 中调用。幂等，可重复调用。"""
+    try:
+        scheduler.add_jobstore(SQLAlchemyJobStore(engine=engine))
+    except ValueError:
+        pass
 
 
 def _execute_script(script_name: str):
