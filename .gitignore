@@ -9,3 +9,6 @@ dist/
 build/
 *.db
 *.sqlite3
+.coverage
+.pytest_cache/
+instance/
