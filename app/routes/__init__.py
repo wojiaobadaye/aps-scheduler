@@ -13,6 +13,7 @@ from app.scheduler import configure_jobstore
 from app.routes.scripts import scripts_bp
 from app.routes.jobs import jobs_bp
 from app.routes.status import status_bp
+from app.routes.envs import envs_bp
 
 
 class JsonFormatter(logging.Formatter):
@@ -59,6 +60,7 @@ def create_app():
     app.register_blueprint(scripts_bp)
     app.register_blueprint(jobs_bp)
     app.register_blueprint(status_bp)
+    app.register_blueprint(envs_bp)
 
     with app.app_context():
         configure_jobstore(db.engine)
