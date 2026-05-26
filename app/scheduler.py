@@ -325,7 +325,7 @@ def ensure_env(session, requirements: str) -> str:
     return env_name
 
 
-def cleanup_unused_envs(session):
+def cleanup_unused_envs(session) -> int:
     """删除无脚本引用的孤立 conda 环境。"""
     from app.models import Script, ScriptEnv
 
