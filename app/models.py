@@ -1,3 +1,5 @@
+import hashlib
+
 from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
@@ -85,6 +87,13 @@ class ScriptEnv(db.Model):
     requirements_hash = db.Column(db.String(64), unique=True, nullable=False)
     status = db.Column(db.String(16), default="creating")  # creating | ready | failed
     created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+    def __init__(self, **kwargs):
+        if "requirements_hash" not in kwargs and "requirements" in kwargs:
+            kwargs["requirements_hash"] = hashlib.sha256(
+                (kwargs["requirements"] or "").encode()
+            ).hexdigest()[:12]
+        super().__init__(**kwargs)
 
     def to_dict(self):
         return {
