@@ -16,3 +16,6 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
     JOBS = []
+    CONDA_EXECUTABLE = os.getenv("CONDA_EXECUTABLE", "conda")
+    CONDA_ENV_BASE = os.getenv("CONDA_ENV_BASE", "base")
+    CONDA_CREATE_TIMEOUT = int(os.getenv("CONDA_CREATE_TIMEOUT", "300"))
