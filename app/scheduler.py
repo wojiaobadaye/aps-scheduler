@@ -2,6 +2,8 @@ import sys
 import os
 import json
 import logging
+import hashlib
+import subprocess
 import importlib.util
 import traceback
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
@@ -184,3 +186,164 @@ def get_job(job_id: str):
         "next_run_time": str(j.next_run_time) if j.next_run_time else None,
         "trigger": str(j.trigger),
     }
+
+
+def compute_requirements_hash(requirements: str) -> str:
+    """计算 requirements 文本的 sha256 前 12 位作为环境标识。"""
+    return hashlib.sha256(requirements.strip().encode()).hexdigest()[:12]
+
+
+def parse_requirements(text: str) -> list[dict]:
+    """解析 requirements.txt 文本为结构化包描述列表。"""
+    lines = text.strip().splitlines()
+    result = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith(("#", "-")):
+            continue
+        for op in ("==", ">=", "<=", "!=", "~=", ">", "<"):
+            if op in line:
+                name, ver = line.split(op, 1)
+                result.append({"name": name.strip(), "op": op, "version": ver.strip()})
+                break
+        else:
+            result.append({"name": line, "op": None, "version": None})
+    return result
+
+
+def _version_tuple(v: str) -> tuple:
+    """'2.1.3' -> (2, 1, 3)，用于版本比较。"""
+    parts = []
+    for p in v.replace("-", ".").split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(p)
+    return tuple(parts)
+
+
+def is_subset_compatible(new_pkgs: list[dict], env_pkgs: list[dict]) -> bool:
+    """检查 new_pkgs 是否为 env_pkgs 的兼容子集。"""
+    if not new_pkgs:
+        return True
+    env_map = {p["name"]: p for p in env_pkgs}
+    for npkg in new_pkgs:
+        epkg = env_map.get(npkg["name"])
+        if not epkg:
+            return False
+        # 新包无版本约束 -> 兼容
+        if npkg["op"] is None or npkg["version"] is None:
+            continue
+        # 环境包无版本 -> 保守认为兼容
+        if epkg["op"] is None or epkg["version"] is None:
+            continue
+        # 版本精确匹配
+        if npkg["op"] == "==" and epkg["op"] == "==":
+            if epkg["version"] != npkg["version"]:
+                return False
+        # 新包要求 >=X，环境包版本 >= X -> 兼容
+        if npkg["op"] == ">=":
+            if epkg["op"] == "==":
+                if _version_tuple(epkg["version"]) < _version_tuple(npkg["version"]):
+                    return False
+            elif epkg["op"] == ">=":
+                if _version_tuple(epkg["version"]) < _version_tuple(npkg["version"]):
+                    return False
+    return True
+
+
+def match_environment(session, requirements: str) -> str | None:
+    """从已有的 ready 环境中匹配兼容的环境，没有则返回 None。"""
+    if not requirements.strip():
+        return Config.CONDA_ENV_BASE
+
+    from app.models import ScriptEnv
+
+    envs = session.query(ScriptEnv).filter_by(status="ready").all()
+    new_pkgs = parse_requirements(requirements)
+
+    for env in envs:
+        env_pkgs = parse_requirements(env.requirements)
+        if env.requirements.strip() == requirements.strip():
+            return env.env_name
+        if is_subset_compatible(new_pkgs, env_pkgs):
+            return env.env_name
+
+    return None
+
+
+def create_conda_env(env_name: str, requirements: str) -> str:
+    """创建 Conda 环境并安装依赖。返回 'ready' 或 'failed'。"""
+    try:
+        subprocess.run(
+            [Config.CONDA_EXECUTABLE, "create", "-n", env_name, "-y", "python=3.12"],
+            capture_output=True, text=True, check=True,
+            timeout=Config.CONDA_CREATE_TIMEOUT,
+        )
+        if requirements.strip():
+            req_path = os.path.join(Config.SCRIPTS_DIR, f"_{env_name}_requirements.txt")
+            with open(req_path, "w") as f:
+                f.write(requirements)
+            subprocess.run(
+                [Config.CONDA_EXECUTABLE, "run", "-n", env_name, "pip", "install", "-r", req_path],
+                capture_output=True, text=True, check=True,
+                timeout=Config.CONDA_CREATE_TIMEOUT,
+            )
+            os.remove(req_path)
+        return "ready"
+    except Exception as e:
+        logger.error("Failed to create conda env %s: %s", env_name, e)
+        return "failed"
+
+
+def ensure_env(session, requirements: str) -> str:
+    """确保环境存在。返回 env_name。"""
+    if not requirements.strip():
+        return Config.CONDA_ENV_BASE
+
+    matched = match_environment(session, requirements)
+    if matched:
+        return matched
+
+    from app.models import ScriptEnv
+
+    req_hash = compute_requirements_hash(requirements)
+    env_name = f"aps_{req_hash}"
+
+    env_record = ScriptEnv(
+        env_name=env_name,
+        requirements=requirements.strip(),
+        requirements_hash=req_hash,
+        status="creating",
+    )
+    session.add(env_record)
+    session.commit()
+
+    status = create_conda_env(env_name, requirements)
+    env_record.status = status
+    session.commit()
+    return env_name
+
+
+def cleanup_unused_envs(session):
+    """删除无脚本引用的孤立 conda 环境。"""
+    from app.models import Script, ScriptEnv
+
+    unused = (
+        session.query(ScriptEnv)
+        .filter(~session.query(Script.env_name).filter(Script.env_name == ScriptEnv.env_name).exists())
+        .all()
+    )
+    count = 0
+    for env in unused:
+        try:
+            subprocess.run(
+                [Config.CONDA_EXECUTABLE, "env", "remove", "-n", env.env_name, "-y"],
+                capture_output=True, text=True, check=True, timeout=60,
+            )
+        except Exception as e:
+            logger.warning("Failed to remove conda env %s: %s", env.env_name, e)
+        session.delete(env)
+        count += 1
+    session.commit()
+    return count
