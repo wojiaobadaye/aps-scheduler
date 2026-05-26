@@ -237,18 +237,22 @@ def is_subset_compatible(new_pkgs: list[dict], env_pkgs: list[dict]) -> bool:
         # 环境包无版本 -> 保守认为兼容
         if epkg["op"] is None or epkg["version"] is None:
             continue
-        # 版本精确匹配
+        # Known-compatible operator combinations
         if npkg["op"] == "==" and epkg["op"] == "==":
             if epkg["version"] != npkg["version"]:
                 return False
-        # 新包要求 >=X，环境包版本 >= X -> 兼容
+            continue
         if npkg["op"] == ">=":
             if epkg["op"] == "==":
                 if _version_tuple(epkg["version"]) < _version_tuple(npkg["version"]):
                     return False
+                continue
             elif epkg["op"] == ">=":
                 if _version_tuple(epkg["version"]) < _version_tuple(npkg["version"]):
                     return False
+                continue
+        # Unknown/unhandled operator combination — conservative: don't assume compatible
+        return False
     return True
 
 
@@ -274,6 +278,7 @@ def match_environment(session, requirements: str) -> str | None:
 
 def create_conda_env(env_name: str, requirements: str) -> str:
     """创建 Conda 环境并安装依赖。返回 'ready' 或 'failed'。"""
+    req_path = None
     try:
         subprocess.run(
             [Config.CONDA_EXECUTABLE, "create", "-n", env_name, "-y", "python=3.12"],
@@ -289,11 +294,19 @@ def create_conda_env(env_name: str, requirements: str) -> str:
                 capture_output=True, text=True, check=True,
                 timeout=Config.CONDA_CREATE_TIMEOUT,
             )
-            os.remove(req_path)
         return "ready"
+    except subprocess.TimeoutExpired:
+        logger.error("Conda env %s creation timed out", env_name)
+        return "failed"
+    except FileNotFoundError:
+        logger.error("Conda executable not found: %s", Config.CONDA_EXECUTABLE)
+        return "failed"
     except Exception as e:
         logger.error("Failed to create conda env %s: %s", env_name, e)
         return "failed"
+    finally:
+        if req_path and os.path.exists(req_path):
+            os.remove(req_path)
 
 
 def ensure_env(session, requirements: str) -> str:
@@ -341,9 +354,9 @@ def cleanup_unused_envs(session) -> int:
                 [Config.CONDA_EXECUTABLE, "env", "remove", "-n", env.env_name, "-y"],
                 capture_output=True, text=True, check=True, timeout=60,
             )
+            session.delete(env)
+            count += 1
         except Exception as e:
             logger.warning("Failed to remove conda env %s: %s", env.env_name, e)
-        session.delete(env)
-        count += 1
     session.commit()
     return count
