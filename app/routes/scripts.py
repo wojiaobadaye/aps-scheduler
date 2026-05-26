@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from app.models import db, Script
 from app.errors import AppError
+from app.scheduler import ensure_env
 from app.script_manager import write_script_file, remove_script_file
 
 scripts_bp = Blueprint("scripts", __name__)
@@ -25,10 +26,15 @@ def create_script():
     if Script.query.filter_by(name=data["name"]).first():
         raise AppError("script name already exists", 409)
 
+    requirements = data.get("requirements", "")
+    env_name = ensure_env(db.session, requirements)
+
     script = Script(
         name=data["name"],
         description=data.get("description", ""),
         content=data["content"],
+        requirements=requirements,
+        env_name=env_name,
     )
     db.session.add(script)
     db.session.commit()
@@ -58,6 +64,9 @@ def update_script(script_id):
     if "content" in data:
         script.content = data["content"]
         write_script_file(script.name, script.content)
+    if "requirements" in data:
+        script.requirements = data["requirements"]
+        script.env_name = ensure_env(db.session, data["requirements"])
     db.session.commit()
     return jsonify(script.to_dict())
 
