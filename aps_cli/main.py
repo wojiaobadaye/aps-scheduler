@@ -64,6 +64,9 @@ def script_show(script_id):
     click.echo("ID:          %d" % s["id"])
     click.echo("Name:        %s" % s["name"])
     click.echo("Description: %s" % s.get("description", ""))
+    click.echo("Env:         %s" % s.get("env_name", "base"))
+    click.echo("Requirements:")
+    click.echo(s.get("requirements", "(none)"))
     click.echo("--- content ---")
     click.echo(s["content"])
 
@@ -73,7 +76,8 @@ def script_show(script_id):
 @click.option("-d", "--description", default="", help="Description")
 @click.option("-f", "--file", "file_path", help="Read script content from file")
 @click.option("--content", help="Script content as string")
-def script_create(name, description, file_path, content):
+@click.option("-r", "--requirements", default="", help="Python dependencies (requirements.txt format)")
+def script_create(name, description, file_path, content, requirements):
     """Create a new script."""
     if file_path:
         with open(file_path) as f:
@@ -81,8 +85,13 @@ def script_create(name, description, file_path, content):
     if not content:
         click.echo("Error: provide --file or --content", err=True)
         sys.exit(1)
-    s = _req("POST", "scripts", json={"name": name, "description": description, "content": content})
-    click.echo("Created script id=%d" % s["id"])
+    s = _req("POST", "scripts", json={
+        "name": name,
+        "description": description,
+        "content": content,
+        "requirements": requirements,
+    })
+    click.echo("Created script id=%d, env=%s" % (s["id"], s.get("env_name", "base")))
 
 
 @script.command("update")
@@ -91,7 +100,8 @@ def script_create(name, description, file_path, content):
 @click.option("-d", "--description", help="New description")
 @click.option("-f", "--file", "file_path", help="New content from file")
 @click.option("--content", help="New content as string")
-def script_update(script_id, name, description, file_path, content):
+@click.option("-r", "--requirements", help="New Python dependencies")
+def script_update(script_id, name, description, file_path, content, requirements):
     """Update a script."""
     body = {}
     if name:
@@ -103,6 +113,8 @@ def script_update(script_id, name, description, file_path, content):
             body["content"] = f.read()
     elif content:
         body["content"] = content
+    if requirements is not None:
+        body["requirements"] = requirements
 
     if not body:
         click.echo("Nothing to update", err=True)
@@ -310,6 +322,34 @@ def docker_ps():
     _docker_cmd("compose", "ps")
 
 
+# ── env commands ──────────────────────────────────────────────
+
+@click.group()
+def env():
+    """Manage Conda environments."""
+
+
+@env.command("list")
+def env_list():
+    """List all conda environments."""
+    envs = _req("GET", "envs")
+    if not envs:
+        click.echo("No environments found.")
+        return
+    for e in envs:
+        click.echo(
+            "%-24s  status=%-10s  scripts=%d"
+            % (e["env_name"], e["status"], e.get("script_count", 0))
+        )
+
+
+@env.command("cleanup")
+def env_cleanup():
+    """Remove unused conda environments."""
+    result = _req("POST", "envs/cleanup")
+    click.echo(result["message"])
+
+
 # ── main CLI ─────────────────────────────────────────────────
 
 @click.group()
@@ -321,6 +361,7 @@ cli.add_command(script)
 cli.add_command(job)
 cli.add_command(sched)
 cli.add_command(docker)
+cli.add_command(env)
 
 if __name__ == "__main__":
     cli()
