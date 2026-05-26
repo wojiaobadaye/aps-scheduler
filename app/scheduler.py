@@ -4,9 +4,7 @@ import json
 import logging
 import hashlib
 import subprocess
-import importlib.util
 import traceback
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,9 +18,6 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from app.config import Config
 
 logger = logging.getLogger(__name__)
-
-_executor = ThreadPoolExecutor(max_workers=4)
-_retry_count: dict[str, int] = {}
 
 scheduler = BackgroundScheduler(
     timezone=Config.SCHEDULER_TIMEZONE,
@@ -40,7 +35,7 @@ def configure_jobstore(engine):
 
 
 def _execute_script(script_name: str):
-    """执行脚本，带超时和异常处理。"""
+    """通过 conda run 子进程执行脚本，带超时和异常处理。"""
     started_at = datetime.now(timezone.utc)
     status = "success"
     output = ""
@@ -48,7 +43,6 @@ def _execute_script(script_name: str):
 
     scripts_dir = Config.SCRIPTS_DIR
     script_path = os.path.join(scripts_dir, script_name)
-
     if not script_path.endswith(".py"):
         script_path += ".py"
 
@@ -56,24 +50,29 @@ def _execute_script(script_name: str):
         _save_execution_log("unknown", "failed", "", f"Script not found: {script_path}", started_at, datetime.now(timezone.utc))
         return
 
-    spec = importlib.util.spec_from_file_location(script_name.replace(".", "_"), script_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    target = None
-    if hasattr(module, "run"):
-        target = module.run
-    elif hasattr(module, "main"):
-        target = module.main
-
-    if not target:
-        _save_execution_log(script_name, "failed", "", "No run() or main() function found", started_at, datetime.now(timezone.utc))
-        return
+    # 从 DB 获取环境名
+    try:
+        from app.models import Script, db
+        script = Script.query.filter_by(name=script_name).first()
+        env_name = script.env_name if script and script.env_name else Config.CONDA_ENV_BASE
+    except Exception:
+        env_name = Config.CONDA_ENV_BASE
 
     try:
-        future = _executor.submit(target)
-        future.result(timeout=Config.SCHEDULER_EXECUTION_TIMEOUT)
-    except FuturesTimeout:
+        result = subprocess.run(
+            [Config.CONDA_EXECUTABLE, "run", "-n", env_name, "python", script_path],
+            capture_output=True, text=True,
+            timeout=Config.SCHEDULER_EXECUTION_TIMEOUT,
+        )
+        output = result.stdout or ""
+        if result.returncode == 0:
+            status = "success"
+            if not output:
+                output = "Execution completed successfully"
+        else:
+            status = "failed"
+            error = result.stderr or f"Exit code: {result.returncode}"
+    except subprocess.TimeoutExpired:
         status = "timeout"
         error = f"Execution timed out after {Config.SCHEDULER_EXECUTION_TIMEOUT}s"
         logger.warning("Job %s timed out", script_name)
@@ -82,25 +81,8 @@ def _execute_script(script_name: str):
         error = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
         logger.error("Job %s failed: %s", script_name, error)
 
-        # Auto retry
-        max_retries = Config.SCHEDULER_MAX_RETRIES
-        if max_retries > 0:
-            retried = _retry_count.get(script_name, 0)
-            if retried < max_retries:
-                _retry_count[script_name] = retried + 1
-                logger.info("Retrying job %s (%d/%d)", script_name, retried + 1, max_retries)
-                import time
-                time.sleep(Config.SCHEDULER_RETRY_DELAY)
-                _execute_script(script_name)
-                return
-            else:
-                del _retry_count[script_name]
-    else:
-        output = "Execution completed successfully"
-
     finished_at = datetime.now(timezone.utc)
     _save_execution_log(script_name, status, output, error, started_at, finished_at)
-    _retry_count.pop(script_name, None)
 
 
 def _save_execution_log(job_id: str, status: str, output: str, error: str,
