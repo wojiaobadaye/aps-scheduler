@@ -12,3 +12,6 @@ build/
 .coverage
 .pytest_cache/
 instance/
+.claude/
+docs/
+tests/
